@@ -1,11 +1,18 @@
 // Retype content script: editable-element detection, the typing engine, and
-// message handling for the popup.
+// message handling for the side panel.
 //
-// Runs in the page (top frame). The popup sends commands here; progress is
+// Runs in the page (top frame). The side panel sends commands here; progress is
 // pushed back with STATUS_UPDATE messages.
 
 (() => {
   'use strict';
+
+  // The panel injects this file on demand when a page was already open when the
+  // extension was installed/reloaded. A page that was loaded *before* that
+  // already has the statically declared copy, so bail out rather than register
+  // a second listener - two copies would type every character twice.
+  if (window.__retypeInjected) return;
+  window.__retypeInjected = true;
 
   // ------------------------------------------------------------ Session state
 
@@ -261,7 +268,7 @@
       extra || {}
     );
     try {
-      // Resolves as a promise in MV3; it rejects when the popup is closed,
+      // Resolves as a promise in MV3; it rejects when the panel is closed,
       // which is normal, so swallow it.
       const sent = chrome.runtime.sendMessage(payload);
       if (sent && typeof sent.catch === 'function') sent.catch(() => {});
@@ -348,8 +355,9 @@
     state.target = target;
     state.status = 'typing';
 
-    // The popup holds browser focus, but the page keeps its activeElement;
-    // focus it again so the caret/selection are where we type.
+    // The side panel has its own document, so the page keeps its activeElement
+    // and the caret is still where the user clicked. Focus it again in case
+    // focus was lost, so the caret/selection are where we type.
     try {
       if (document.activeElement !== target) {
         try { target.focus(); } catch (e) {}

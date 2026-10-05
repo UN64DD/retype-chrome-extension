@@ -1,4 +1,4 @@
-/* Retype popup styles */
+/* Retype side panel styles */
 
 :root {
   --bg: #ffffff;
@@ -17,10 +17,16 @@
   box-sizing: border-box;
 }
 
+/* The side panel is a full-height, user-resizable column, so the layout is
+   fluid: the text area absorbs the leftover height and the rest sizes to
+   content. */
 body {
-  width: 375px;
+  min-width: 220px;
+  height: 100vh;
   margin: 0;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 13px;
   color: var(--fg);
@@ -28,6 +34,7 @@ body {
 }
 
 .header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -61,6 +68,7 @@ body {
 
 .text-input {
   display: block;
+  flex: 1 1 auto;
   width: 100%;
   min-height: 110px;
   padding: 9px 10px;
@@ -81,8 +89,10 @@ body {
 }
 
 .speed-row {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
   margin: 11px 0;
 }
@@ -112,13 +122,15 @@ body {
   border-color: var(--accent);
 }
 
+/* Two columns so four buttons stay readable in a narrow panel. */
 .controls {
-  display: flex;
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 7px;
 }
 
 .btn {
-  flex: 1;
   padding: 7px 0;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -154,6 +166,7 @@ body {
 }
 
 .message {
+  flex-shrink: 0;
   margin-top: 10px;
   padding: 8px 10px;
   border: 1px solid #f3c8c8;
@@ -172,6 +185,7 @@ body {
 }
 
 .status-row {
+  flex-shrink: 0;
   display: flex;
   gap: 6px;
   margin-top: 11px;
@@ -186,6 +200,7 @@ body {
 }
 
 .progress {
+  flex-shrink: 0;
   margin-top: 8px;
 }
 

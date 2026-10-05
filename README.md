@@ -1,7 +1,7 @@
 # Retype
 
 **Retype** is a Chrome extension (Manifest V3) that types text for you. Paste or type
-text into the extension popup, click into a text field on any web page, press
+text into the extension side panel, click into a text field on any web page, press
 **Start**, and Retype types the text into that field one character at a time - at a
 speed you choose.
 
@@ -11,8 +11,9 @@ Google Docs is now supported; Microsoft Word integration is not included yet
 
 ## Current features
 
-- Popup with a large paste textarea, typing-speed control, and Start / Pause /
-  Stop / Clear buttons
+- Side panel (not a popup) with a large paste textarea, typing-speed control, and
+  Start / Pause / Stop / Clear buttons. It stays open while you click and type on the
+  page, so it never disappears mid-task
 - Live status indicator: `Ready`, `Typing...`, `Paused`, `Completed`, `Stopped`, `Error`
 - Character progress indicator (`120 / 500 characters`) with a progress bar
 - Character-by-character typing engine (`async/await` + timer-based delays) that
@@ -26,16 +27,21 @@ Google Docs is now supported; Microsoft Word integration is not included yet
   plus a validated custom value
 - Clear, friendly errors for every failure case (no focused field, unsupported
   page, empty text, invalid speed, page changed while typing, ...)
-- **No special permissions requested** - not even `tabs`
+- Works on any page without a manual reload: the content script is injected on demand
+  when the tab predates the extension being installed or reloaded
+- Permissions: `sidePanel`, `scripting`, and host access to `http/https/file`. Host access
+  is what lets Retype read the tab URL (for accurate errors) and inject itself on demand.
+  It also requires `scripting` - without host permissions Chrome refuses injection
 
 ## Project structure
 
 ```text
 retype-extension/
-├── manifest.json    # Manifest V3, minimal permissions, content script registration
-├── popup.html       # Popup markup
-├── popup.css        # Popup styles (375px wide)
-├── popup.js         # Popup controls, validation, messaging, status display
+├── manifest.json    # Manifest V3, minimal permissions, side panel + content scripts
+├── background.js    # Service worker: opens the side panel on toolbar click
+├── panel.html       # Side panel markup
+├── panel.css        # Side panel styles (fluid, full height)
+├── panel.js         # Panel controls, validation, messaging, status display
 ├── content.js       # Editable detection + typing engine + message handlers
 ├── test.html        # Local testing page (textarea, input, contenteditable)
 ├── README.md
@@ -83,11 +89,16 @@ the recommended route.)
 
 ### Test procedure
 
-1. Click inside the textarea, the text input, or the contenteditable box on the
-   test page so the field is focused.
-2. Click the Retype toolbar icon.
-3. Paste or type text, choose a typing delay, press **Start**.
-4. Watch the text appear one character at a time; status and progress update live.
+1. Click the Retype toolbar icon to open the side panel.
+2. Paste or type text, choose a typing delay.
+3. Click inside the textarea, the text input, or the contenteditable box on the
+   test page so the field is focused (the panel stays open).
+4. Press **Start** in the panel; watch the text appear one character at a time.
+   Status and progress update live.
+
+The order of steps 3 and 4 does not matter as long as the field is focused before
+**Start**: Retype injects itself into the tab on demand, so a page that was already
+open when the extension was loaded works without a manual reload.
 
 ### Suggested test cases
 
@@ -104,13 +115,13 @@ the recommended route.)
 
 ## How it works
 
-- The **popup** validates the text and delay, then sends commands to the page's
+- The **side panel** validates the text and delay, then sends commands to the page's
   content script with `chrome.tabs.sendMessage`:
   `RETYPE_START`, `RETYPE_PAUSE`, `RETYPE_RESUME`, `RETYPE_STOP`,
   `RETYPE_CLEAR`, `GET_STATUS`.
 - The **content script** (`content.js`) finds the focused editable element with
   `getActiveEditableElement()`, runs the async typing loop, and pushes
-  `STATUS_UPDATE` messages (`{ current, total, status, message? }`) back to the popup.
+  `STATUS_UPDATE` messages (`{ current, total, status, message? }`) back to the panel.
 - For `<textarea>` / `<input>` it writes through the **native value setter** and
   dispatches an `InputEvent('input')`, so pages see normal typing behavior.
 - For `contenteditable` it uses `document.execCommand('insertText' /
@@ -135,8 +146,11 @@ the recommended route.)
 - `contenteditable` insertion relies on `document.execCommand`, which is
   deprecated (though still supported by all current browsers); a manual fallback
   is included if it returns `false`.
-- The popup must remain open while typing; closing it does not stop typing, but
-  the progress display resumes on the next popup open (`GET_STATUS`).
+- The side panel can be closed while typing; that does not stop typing, and the
+  progress display resumes the next time the panel is opened (`GET_STATUS`).
+- Requires Chrome/Edge 114 or newer for the Side Panel API. A toolbar *popup* cannot
+  be used here: popups close the instant they lose focus, which is exactly what
+  happens when you click a text field on the page.
 
 ## Future roadmap
 
