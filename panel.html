@@ -43,6 +43,14 @@
     >
   </div>
 
+  <label class="toggle-row">
+    <input type="checkbox" id="keyboardMode">
+    <span class="toggle-text">
+      Real keyboard mode
+      <span class="toggle-hint">Required for Google Docs, Sheets and Slides, which draw their text on a canvas and ignore synthetic typing. Chrome shows a &ldquo;debugging&rdquo; bar while it runs.</span>
+    </span>
+  </label>
+
   <div class="controls">
     <button id="startBtn" class="btn btn-primary" type="button">Start</button>
     <button id="pauseBtn" class="btn" type="button" disabled>Pause</button>
@@ -55,6 +63,8 @@
   <div class="status-row">
     <span class="status-label">Status:</span>
     <span id="statusText" class="status-value">Ready</span>
+    <span class="status-label">Engine:</span>
+    <span id="engineText" class="status-value">Direct</span>
   </div>
 
   <div class="progress">

@@ -5,9 +5,9 @@ text into the extension side panel, click into a text field on any web page, pre
 **Start**, and Retype types the text into that field one character at a time - at a
 speed you choose.
 
-Phase 1 focuses on the core typing engine for normal web pages.
-Google Docs is now supported; Microsoft Word integration is not included yet
-(see Roadmap).
+Normal web pages are typed through the DOM. Canvas-based editors such as Google
+Docs are typed with real keyboard events instead, because they ignore synthetic
+ones. Microsoft Word for the web is not included yet (see Roadmap).
 
 ## Current features
 
@@ -29,20 +29,30 @@ Google Docs is now supported; Microsoft Word integration is not included yet
   page, empty text, invalid speed, page changed while typing, ...)
 - Works on any page without a manual reload: the content script is injected on demand
   when the tab predates the extension being installed or reloaded
-- Permissions: `sidePanel`, `scripting`, and host access to `http/https/file`. Host access
-  is what lets Retype read the tab URL (for accurate errors) and inject itself on demand.
-  It also requires `scripting` - without host permissions Chrome refuses injection
+- Two typing engines, chosen automatically per page:
+  - **DOM engine** for ordinary inputs and `contenteditable`
+  - **Real-keyboard engine** for canvas editors (Google Docs, Sheets, Slides), which
+    dispatches trusted key events via `chrome.debugger`. While it runs, Chrome shows a
+    yellow "Retype is debugging this browser" infobar, and DevTools must be closed for
+    that tab
+- Types into the field inside `<iframe>` editors: Retype probes every frame, remembers
+  the field you last clicked, and addresses that frame directly
+- Permissions: `sidePanel`, `scripting`, `debugger`, and host access to `http/https/file`.
+  Host access is what lets Retype read the tab URL (for accurate errors) and inject itself
+  on demand. `scripting` and host permissions are both required - Chrome refuses
+  injection without them. `debugger` is used only for the real-keyboard engine and is
+  detached as soon as typing finishes
 
 ## Project structure
 
 ```text
 retype-extension/
 ├── manifest.json    # Manifest V3, minimal permissions, side panel + content scripts
-├── background.js    # Service worker: opens the side panel on toolbar click
+├── background.js    # Service worker: side panel setup + real-keyboard (CDP) engine
 ├── panel.html       # Side panel markup
 ├── panel.css        # Side panel styles (fluid, full height)
-├── panel.js         # Panel controls, validation, messaging, status display
-├── content.js       # Editable detection + typing engine + message handlers
+├── panel.js         # Panel controls, validation, engine routing, frame targeting
+├── content.js       # Editable detection + DOM typing engine + message handlers
 ├── test.html        # Local testing page (textarea, input, contenteditable)
 ├── README.md
 └── icons/           # icon16/32/48/128.png
@@ -112,6 +122,17 @@ open when the extension was loaded works without a manual reload.
 | 6 | Textarea | Text typed correctly, `input` events fire |
 | 7 | Text input | Text typed at the caret, `input` events fire |
 | 8 | Contenteditable | Text and line breaks inserted correctly |
+| 9 | Google Docs, real-keyboard mode | Text appears in the document; yellow debugging infobar shown, gone when done |
+
+### Google Docs test procedure
+
+1. Open a document in Google Docs and click at the point where you want the text.
+2. Open the side panel. **Real keyboard mode** should already be ticked, since the panel
+   detects Docs from the tab URL.
+3. Paste text and press **Start**.
+4. Expect a yellow "debugging this browser" infobar while typing, and text appearing in
+   the document. Close DevTools for that tab first, otherwise attaching fails with
+   "Another debugger is already attached".
 
 ## How it works
 
@@ -119,9 +140,26 @@ open when the extension was loaded works without a manual reload.
   content script with `chrome.tabs.sendMessage`:
   `RETYPE_START`, `RETYPE_PAUSE`, `RETYPE_RESUME`, `RETYPE_STOP`,
   `RETYPE_CLEAR`, `GET_STATUS`.
-- The **content script** (`content.js`) finds the focused editable element with
+- The panel picks an engine from the page URL. Google Docs / Sheets / Slides select the
+  **real-keyboard engine**, which is routed to the service worker with `runtime.sendMessage`
+  (`RT_KEYBOARD_START`, `RT_KEYBOARD_PAUSE`, `RT_KEYBOARD_RESUME`, `RT_KEYBOARD_STOP`,
+  `RT_KEYBOARD_CLEAR`, `RT_KEYBOARD_STATUS`) because it lives in the background.
+- The real-keyboard engine attaches `chrome.debugger`, focuses the editing surface via
+  `Runtime.evaluate`, and types each character with `Input.dispatchKeyEvent` - a text
+  `keyDown` plus a `keyUp`, and real key codes for Enter. The session stays in the service
+  worker so it survives long pauses, and the debugger detaches on completion, Stop, or
+  Clear.
+- The **content script** (`content.js`) finds the editable element with
   `getActiveEditableElement()`, runs the async typing loop, and pushes
   `STATUS_UPDATE` messages (`{ current, total, status, message? }`) back to the panel.
+- Because the side panel takes focus away from the page, `document.activeElement` can
+  revert to `<body>` between your click and **Start**. The content script records the last
+  focused field on `focusin` and exposes `window.__retypeHasEditable()`, so the panel's
+  frame probe and the typing script always agree on which frame holds the field.
+- Frame routing: the panel probes all frames with `chrome.scripting.executeScript`, then
+  sends to one frame using the `frameId` **options** argument to `chrome.tabs.sendMessage`.
+  (A `frameId` inside the message body is ignored, which broadcasts to every frame and lets
+  an unrelated frame's error win.)
 - For `<textarea>` / `<input>` it writes through the **native value setter** and
   dispatches an `InputEvent('input')`, so pages see normal typing behavior.
 - For `contenteditable` it uses `document.execCommand('insertText' /
@@ -130,13 +168,15 @@ open when the extension was loaded works without a manual reload.
 
 ## Known limitations
 
-- **Google Docs is now supported** via synthetic keyboard events
-  (in addition to normal DOM inputs). Microsoft Word for the web / other
-  canvas-based editors are not supported yet.
-- Only the top frame is typed into; content inside `<iframe>`s (including Google Docs'
-  editing iframe in some cases) may require the focused element to be targeted
-  directly. If typing does nothing in Docs, ensure the document text area is focused
-  before starting.
+- Google Docs / Sheets / Slides work through the real-keyboard engine, which needs
+  `chrome.debugger`. Consequences: Chrome shows a yellow debugging infobar while typing,
+  **DevTools must be closed** for that tab, and only one tab can be debugged at a time.
+- Microsoft Word for the web and other canvas-based editors are not supported yet: they
+  are not on the real-keyboard auto-detect list, and the DOM engine cannot see them. They
+  may work if you tick **Real keyboard mode** manually.
+- The DOM engine types into the frame holding the last field you clicked. Cross-origin
+  iframes are handled the same way, but a frame that never received a `focusin` event
+  cannot be targeted - click inside the field before pressing **Start**.
 - Works on normal `http(s)` pages. Chrome-internal pages (`chrome://`, the Web
   Store) and PDFs cannot run content scripts.
 - Local `file://` pages require **Allow access to file URLs** (or use the local
@@ -154,17 +194,14 @@ open when the extension was loaded works without a manual reload.
 
 ## Future roadmap
 
-**Next phase: Google Docs integration (improvements)**
+**Next phase: real-keyboard integration (improvements)**
 
-1. Handle Google Docs' line-break model and caret tracking more robustly (Docs owns
-   its own caret; Enter/newlines may need special handling beyond a single char).
-2. Better targeting of the active editing surface (Docs often uses an iframe or a
-   contenteditable with complex event listeners). Detect and focus the correct
-   element.
-3. Validate against a large sample document, then add Microsoft Word for the web
-   support, which uses a similar but non-identical model.
+1. Exercise the real-keyboard engine against large real documents, since automated tests
+   can only approximate canvas editors locally.
+2. Offer a keyboard-mode preference (auto / always / never) instead of the current
+   auto-detect plus the manual **Real keyboard mode** checkbox.
+3. Extend the auto-detect list to Microsoft Word for the web and other canvas editors,
+   which use a similar but non-identical model.
 
 Later ideas: configurable typing jitter (human-like speed), per-field start
 position, keyboard shortcut to start/stop, and an options page.
-# retype-chrome-extension
-# retype-chrome-extension

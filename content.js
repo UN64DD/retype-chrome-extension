@@ -13,6 +13,7 @@
   // a second listener - two copies would type every character twice.
   if (window.__retypeInjected) return;
   window.__retypeInjected = true;
+  window.__retypeBusy = false;
 
   // ------------------------------------------------------------ Session state
 
@@ -45,10 +46,46 @@
     return el.isContentEditable === true;
   }
 
+  // The most recently focused editable element in this frame.
+  //
+  // document.activeElement alone is not enough: it reverts to <body> whenever
+  // focus briefly leaves the page (switching tabs, clicking the side panel, a
+  // transient blur during page load), and a Start issued in that window would
+  // fail with "No editable field" even though the user had clicked a field
+  // seconds earlier. Remembering the last one makes Start dependable.
+  let lastEditable = null;
+
+  function rememberEditable(el) {
+    if (isEditable(el)) lastEditable = el;
+  }
+
+  document.addEventListener(
+    'focusin',
+    () => {
+      rememberEditable(document.activeElement);
+    },
+    true
+  );
+
+function isStillInDocument(el) {
+    return !!el && (el === document.body || document.contains(el));
+  }
+
+  // Exposed for the panel's frame probe. That probe runs in the isolated world, so
+  // it cannot see this closure; without this bridge it and getActiveEditableElement()
+  // could disagree about which frame holds the field (the probe sees a transient
+  // <body> while the script remembers the real field), and the panel would address
+  // the wrong frame.
+  window.__retypeHasEditable = function () {
+    if (isEditable(document.activeElement)) return true;
+    return isStillInDocument(lastEditable) && isEditable(lastEditable);
+  };
+
   // Returns the element the user should type into, or null.
   function getActiveEditableElement() {
     let el = document.activeElement;
     if (isEditable(el)) return el;
+    if (isStillInDocument(lastEditable)) return lastEditable;
     if (isGoogleDocs()) {
       // Google Docs often uses a contenteditable element with role="textbox"
       // as the main editing surface. Try to find one.
@@ -193,58 +230,7 @@
     }
   }
 
-  // Google Docs captures typed characters via synthetic keyboard events sent to
-  // its internal document view (often in a contenteditable iframe or a canvas-
-  // backed surface). Dispatching keydown/keypress/keyup with the correct
-  // KeyboardEventInit allows Docs to process the character as if the user typed it.
-  // This does *not* modify the DOM directly; Docs owns its own text model.
-  function insertIntoGoogleDocs(el, char) {
-    if (char === '\n') {
-      const enterInit = {
-        bubbles: true,
-        cancelable: true,
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        charCode: 13,
-        composed: true,
-      };
-      el.dispatchEvent(new KeyboardEvent('keydown', enterInit));
-      el.dispatchEvent(new KeyboardEvent('keypress', enterInit));
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertLineBreak', composed: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', enterInit));
-      return;
-    }
-
-    const isSpace = char === ' ';
-    const upper = char.toUpperCase();
-    const code = isSpace ? 'Space' : (/^[A-Z]$/.test(upper) ? 'Key' + upper : '');
-    const eventInit = {
-      bubbles: true,
-      cancelable: true,
-      key: isSpace ? ' ' : char,
-      code: code,
-      charCode: char.charCodeAt(0),
-      keyCode: char.charCodeAt(0),
-      which: char.charCodeAt(0),
-      composed: true,
-    };
-
-    // Some Docs surfaces expect keydown/keypress/keyup in order.
-    el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-    if (char.length === 1) {
-      el.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-    }
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char, composed: true }));
-    el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
-  }
-
   function insertChar(el, char) {
-    if (isGoogleDocs()) {
-      insertIntoGoogleDocs(el, char);
-      return;
-    }
     const tag = el.tagName.toUpperCase();
     if (tag === 'TEXTAREA' || tag === 'INPUT') {
       insertIntoValue(el, char);
@@ -280,6 +266,7 @@
   function fail(message) {
     state.status = 'error';
     state.runId += 1; // cancel any running loop
+    window.__retypeBusy = false;
     report({ message });
   }
 
@@ -324,6 +311,7 @@
 
     if (state.runId === myRun) {
       state.status = 'completed';
+      window.__retypeBusy = false;
       report();
     }
   }
@@ -341,6 +329,18 @@
       return { ok: false, error: 'Invalid typing speed. Use 0 or higher.' };
     }
 
+    // Canvas editors (Google Docs and friends) hold their text model in
+    // JavaScript and ignore synthetic events, so this engine can never type
+    // into them. Say that plainly rather than reporting a fake success.
+    if (isGoogleDocs()) {
+      return {
+        ok: false,
+        error:
+          'Google Docs draws its text on a canvas, so a page script cannot type into it.\n' +
+          'Tick "Real keyboard mode" in the panel to type with real key presses instead.',
+      };
+    }
+
     const target = getActiveEditableElement();
     if (!target) {
       return { ok: false, error: 'No editable field detected.\nClick inside a text field first.' };
@@ -354,6 +354,7 @@
     state.delay = delay;
     state.target = target;
     state.status = 'typing';
+    window.__retypeBusy = true;
 
     // The side panel has its own document, so the page keeps its activeElement
     // and the caret is still where the user clicked. Focus it again in case
@@ -364,10 +365,6 @@
       }
       if (target.isContentEditable) {
         try { ensureCaretIn(target); } catch (e) {}
-      }
-      if (isGoogleDocs()) {
-        // Ensure Docs receives focus on the editing surface
-        try { target.click(); } catch (e) {}
       }
     } catch (err) {
       // Focus can fail on exotic elements; insertion still tries its best.
@@ -402,6 +399,7 @@
     }
     state.runId += 1; // cancel the loop immediately
     state.status = 'stopped';
+    window.__retypeBusy = false;
     report();
     return { ok: true, current: state.index, total: state.total };
   }
@@ -413,6 +411,7 @@
     state.total = 0;
     state.index = 0;
     state.target = null;
+    window.__retypeBusy = false;
     report();
     return { ok: true };
   }

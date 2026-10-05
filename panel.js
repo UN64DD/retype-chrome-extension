@@ -1,9 +1,16 @@
-// Retype side panel logic: validates input, talks to the content script,
+// Retype side panel logic: validates input, picks the right typing engine,
 // mirrors status.
 //
 // This runs as a side panel rather than a toolbar popup: popups close as soon
 // as they lose focus, so clicking into a text field on the page dismissed the
 // whole UI. The side panel survives that click, on every site.
+//
+// Two engines exist:
+//   dom      - content.js writes straight into the field. Works on ordinary
+//              pages, needs no debugger, cheapest option.
+//   keyboard - the service worker produces trusted keystrokes over the DevTools
+//              protocol. Required for canvas-based editors (Google Docs), which
+//              ignore synthetic events entirely.
 
 const els = {
   text: document.getElementById('text'),
@@ -18,6 +25,8 @@ const els = {
   statusText: document.getElementById('statusText'),
   progressBar: document.getElementById('progressBar'),
   progressText: document.getElementById('progressText'),
+  keyboardMode: document.getElementById('keyboardMode'),
+  engineText: document.getElementById('engineText'),
 };
 
 const STATUS_LABELS = {
@@ -34,6 +43,15 @@ const STATUS_LABELS = {
 let status = 'ready';
 let current = 0;
 let total = 0;
+
+// Which engine the panel expects to talk to on the next command. Follows the
+// Real keyboard mode checkbox, including auto-detection.
+let engine = 'dom';
+
+// Which engine owns the session that is actually running. Deliberately separate
+// from `engine`: ticking or unticking the checkbox must not redirect Pause, Stop
+// or Clear away from a session that is still typing.
+let sessionEngine = null;
 
 // ---------------------------------------------------------------- UI helpers
 
@@ -53,6 +71,10 @@ function render() {
 
   els.progressText.textContent = current + ' / ' + total + ' characters';
   els.progressBar.style.width = total > 0 ? Math.round((current / total) * 100) + '%' : '0%';
+
+  if (els.engineText) {
+    els.engineText.textContent = engine === 'keyboard' ? 'Real keyboard' : 'Direct';
+  }
 }
 
 function showMessage(text, kind) {
@@ -68,12 +90,47 @@ function clearMessage() {
 }
 
 function applyStatus(payload) {
+  if (payload.engine) engine = payload.engine;
   if (payload.status) status = payload.status;
   if (typeof payload.current === 'number') current = payload.current;
   if (typeof payload.total === 'number') total = payload.total;
   if (payload.message) showMessage(payload.message, status === 'error' ? 'error' : 'info');
   if (status === 'error' && !payload.message) showMessage('Typing failed. See the page for details.');
   render();
+}
+
+// ---------------------------------------------------------- Engine selection
+
+// Canvas-based editors draw their text on a canvas and own the text model in
+// JavaScript, so a page script cannot type into them no matter how the DOM is
+// poked. Those sites need real keystrokes instead.
+const CANVAS_EDITORS = /^(docs|sheets|slides)\.google\.com$/;
+
+function needsKeyboardEngine(url) {
+  if (!url) return false;
+  try {
+    return CANVAS_EDITORS.test(new URL(url).hostname);
+  } catch (err) {
+    return false;
+  }
+}
+
+// Ticks the checkbox automatically on sites that need it, without fighting the
+// user: once they touch it, their choice sticks.
+let keyboardModeTouched = false;
+
+function autoDetectEngine() {
+  if (keyboardModeTouched || !els.keyboardMode) return;
+  activeTab()
+    .then((tab) => {
+      if (!els.keyboardMode) return;
+      els.keyboardMode.checked = needsKeyboardEngine(tab && tab.url);
+      // Keep `engine` in step with the checkbox so the indicator and any command
+      // issued before the first Start already target the right engine.
+      engine = els.keyboardMode.checked ? 'keyboard' : 'dom';
+      render();
+    })
+    .catch(() => {});
 }
 
 // ------------------------------------------------------------- Speed control
@@ -146,30 +203,79 @@ function explainFailure(tab, reason) {
   return 'Retype could not reach the content script in this tab.\nReload the tab (Ctrl+R / Cmd+R), then press Start again.\n' + detail;
 }
 
-// Runs in every frame and reports which ones currently have the caret inside an
-// editable element. Injected as a one-off function, so it adds no listeners.
-// Used to pick the right frame on editors that host their text surface in an
-// iframe (Google Docs), where a broadcast message would be answered by a frame
-// that cannot see the caret.
-function detectEditableFrame() {
+// Runs once in every frame and reports what that frame can see. Injected as a
+// one-off function, so it registers no listeners and cannot interfere with the
+// page. Used to pick the right frame on editors that host their text surface in
+// an iframe (Google Docs), where a broadcast message is answered by the outer
+// frame that cannot see the caret.
+//
+// `busy` tells us the frame is already typing, which happens when the broadcast
+// reached it before we got a chance to target it explicitly.
+function detectFrameState() {
   const el = document.activeElement;
-  if (!el) return false;
-  const tag = el.tagName.toUpperCase();
-  if (tag === 'TEXTAREA') return !el.disabled && !el.readOnly;
-  if (tag === 'INPUT') {
-    const type = (el.type || 'text').toLowerCase();
-    return ['text', 'search', 'url', 'tel', 'email', 'password', ''].includes(type) && !el.disabled && !el.readOnly;
+  let editable = false;
+  if (el) {
+    const tag = el.tagName.toUpperCase();
+    if (tag === 'TEXTAREA') editable = !el.disabled && !el.readOnly;
+    else if (tag === 'INPUT') {
+      const type = (el.type || 'text').toLowerCase();
+      editable = ['text', 'search', 'url', 'tel', 'email', 'password', ''].includes(type) && !el.disabled && !el.readOnly;
+    } else editable = el.isContentEditable === true;
   }
-  return el.isContentEditable === true;
+
+  const injected = !!window.__retypeInjected;
+
+  // The content script remembers the last focused field, because activeElement
+  // reverts to <body> the moment focus leaves the page. Ask it rather than
+  // second-guessing it, so this probe and handleStart always agree.
+  if (injected && typeof window.__retypeHasEditable === 'function') {
+    editable = !!window.__retypeHasEditable();
+  }
+
+  return { editable: editable, busy: !!(injected && window.__retypeBusy) };
 }
 
-async function frameWithEditable(tabId) {
+async function frameStatuses(tabId) {
   const results = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
-    func: detectEditableFrame,
+    func: detectFrameState,
   });
-  const frames = (results || []).filter((r) => r.result === true);
-  return frames.length ? frames[frames.length - 1].frameId : null;
+  return (results || [])
+    .map((r) => ({ frameId: r.frameId, editable: !!(r.result && r.result.editable), busy: !!(r.result && r.result.busy) }))
+    .sort((a, b) => a.frameId - b.frameId);
+}
+
+// Picks the frame a command should be addressed to.
+//
+// Messages must never be broadcast on multi-frame editors: every frame would
+// start typing at once, and whichever frame happened to answer first decided
+// what the panel displayed. Here we ask each frame what it sees first, then
+// address exactly one frame.
+async function resolveTargetFrame(tabId, message) {
+  let frames = [];
+  try {
+    frames = await frameStatuses(tabId);
+  } catch (err) {
+    return undefined; // detection unavailable; fall back to a broadcast
+  }
+
+  // A frame that is already typing owns the session (Pause/Stop/Clear).
+  if (message.type !== 'RETYPE_START' && message.type !== 'GET_STATUS') {
+    const busy = frames.filter((f) => f.busy);
+    if (busy.length) return busy[busy.length - 1].frameId;
+  }
+
+  // The frame holding the caret. Deepest wins, which is the inner editor of a
+  // Docs-style iframe rather than the outer shell.
+  const editable = frames.filter((f) => f.editable);
+  if (editable.length) return editable[editable.length - 1].frameId;
+
+  const stillTyping = frames.filter((f) => f.busy);
+  if (stillTyping.length) return stillTyping[stillTyping.length - 1].frameId;
+
+  // Nothing focused anywhere: address the top frame so it returns the honest
+  // "click inside a text field" error.
+  return 0;
 }
 
 async function sendToContent(message) {
@@ -178,45 +284,42 @@ async function sendToContent(message) {
     throw new Error('No web page tab found. Open a webpage tab (not chrome://) and try again.');
   }
 
-  let response = null;
-  let firstError = null;
+  // frameId must go in the options argument. Left inside the message body it is
+  // silently ignored, so every command was broadcast to every frame and the first
+  // frame to answer won: on an iframe editor the top frame replied "No editable
+  // field" even though the frame holding the field had already typed the text.
+  const frameId = await resolveTargetFrame(tab.id, message);
+  // undefined means detection itself failed; broadcast rather than guess a frame.
+  const options = typeof frameId === 'number' ? { frameId } : undefined;
 
   try {
-    response = await chrome.tabs.sendMessage(tab.id, message);
+    return await chrome.tabs.sendMessage(tab.id, message, options);
   } catch (err) {
-    firstError = err;
-  }
-
-  if (firstError) {
     // No listener: the tab predates this extension being installed or reloaded.
     // Inject (all frames, so iframe-based editors are covered) and try again.
     // This is why Start no longer demands a manual page reload.
     try {
       await injectContentScript(tab.id);
-      response = await chrome.tabs.sendMessage(tab.id, message);
-    } catch (err) {
-      const reason = /Receiving end does not exist|Could not establish connection/i.test(err.message || '')
-        ? (firstError.message || err.message)
-        : err.message;
+      return await chrome.tabs.sendMessage(tab.id, message, options);
+    } catch (retryErr) {
+      const reason = /Receiving end does not exist|Could not establish connection/i.test(retryErr.message || '')
+        ? err.message || retryErr.message
+        : retryErr.message;
       throw new Error(explainFailure(tab, reason));
     }
   }
+}
 
-  // The broadcast was answered by a frame with no focused field while another
-  // frame does have the caret (the normal Google Docs layout). Retry against the
-  // frame that actually holds an editable element.
-  if (response && !response.ok && /No editable field/i.test(response.error || '') && message.frameId === undefined) {
-    try {
-      const frameId = await frameWithEditable(tab.id);
-      if (frameId !== null && frameId !== 0) {
-        response = await chrome.tabs.sendMessage(tab.id, Object.assign({}, message, { frameId }));
-      }
-    } catch (err) {
-      // Detection is best-effort; keep the original response.
-    }
+// Sends a command to whichever engine is running. The keyboard engine lives in
+// the service worker, so it is reached with a runtime message instead; the dom
+// engine runs in the page, so it is reached through the tab.
+async function sendToEngine(command) {
+  // A running session outranks the checkbox: reach whichever engine owns it.
+  const target = sessionEngine || engine;
+  if (target === 'keyboard') {
+    return chrome.runtime.sendMessage({ type: 'RT_KEYBOARD_' + command });
   }
-
-  return response;
+  return sendToContent({ type: 'RETYPE_' + command });
 }
 
 async function start() {
@@ -238,9 +341,21 @@ async function start() {
     return;
   }
 
+  const tab = await activeTab();
+  if (!tab) {
+    status = 'error';
+    render();
+    showMessage('No web page tab found. Open a webpage tab (not chrome://) and try again.');
+    return;
+  }
+
+  const useKeyboard = !!(els.keyboardMode && els.keyboardMode.checked) || needsKeyboardEngine(tab.url);
+
   let response;
   try {
-    response = await sendToContent({ type: 'RETYPE_START', text, delay });
+    response = useKeyboard
+      ? await chrome.runtime.sendMessage({ type: 'RT_KEYBOARD_START', tabId: tab.id, text, delay })
+      : await sendToContent({ type: 'RETYPE_START', text, delay });
   } catch (err) {
     status = 'error';
     render();
@@ -255,6 +370,9 @@ async function start() {
     return;
   }
 
+  engine = useKeyboard ? 'keyboard' : 'dom';
+  // Pin the session to this engine so later commands ignore checkbox changes.
+  sessionEngine = engine;
   status = 'typing';
   current = 0;
   total = text.length;
@@ -263,11 +381,11 @@ async function start() {
 
 async function pauseOrResume() {
   clearMessage();
-  const type = status === 'paused' ? 'RETYPE_RESUME' : 'RETYPE_PAUSE';
+  const paused = status === 'paused';
   try {
-    const response = await sendToContent({ type });
+    const response = await sendToEngine(paused ? 'RESUME' : 'PAUSE');
     if (response && response.ok) {
-      status = type === 'RETYPE_PAUSE' ? 'paused' : 'typing';
+      status = paused ? 'typing' : 'paused';
     } else if (response && response.error) {
       showMessage(response.error);
     }
@@ -281,7 +399,7 @@ async function pauseOrResume() {
 async function stop() {
   clearMessage();
   try {
-    const response = await sendToContent({ type: 'RETYPE_STOP' });
+    const response = await sendToEngine('STOP');
     if (response && response.ok) {
       status = 'stopped';
       current = response.current;
@@ -300,7 +418,7 @@ async function clearAll() {
   clearMessage();
   els.text.value = '';
   try {
-    const response = await sendToContent({ type: 'RETYPE_CLEAR' });
+    const response = await sendToEngine('CLEAR');
     if (response && response.ok) {
       status = 'ready';
       current = 0;
@@ -325,6 +443,18 @@ els.pauseBtn.addEventListener('click', pauseOrResume);
 els.stopBtn.addEventListener('click', stop);
 els.clearBtn.addEventListener('click', clearAll);
 
+if (els.keyboardMode) {
+  els.keyboardMode.addEventListener('change', () => {
+    keyboardModeTouched = true;
+    engine = els.keyboardMode.checked ? 'keyboard' : 'dom';
+    render();
+  });
+}
+
+// Re-detect when the user moves to another tab, so the mode follows the page.
+chrome.tabs.onActivated.addListener(() => autoDetectEngine());
+chrome.tabs.onUpdated.addListener(() => autoDetectEngine());
+
 // Progress updates pushed by the content script.
 chrome.runtime.onMessage.addListener((message) => {
   if (message && message.type === 'STATUS_UPDATE') {
@@ -335,6 +465,26 @@ chrome.runtime.onMessage.addListener((message) => {
 // Sync with the content script when the panel opens, in case a session is
 // already running (e.g. the panel was closed and reopened mid-typing).
 async function syncStatus() {
+  // A keyboard session lives in the service worker and is invisible to the
+  // content script, so a reopened panel has to ask the worker directly. Without
+  // this the panel would report "Ready" while Docs was still being typed into.
+  if ((sessionEngine || engine) === 'keyboard') {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'RT_KEYBOARD_STATUS' });
+      // Only trust a snapshot that describes a session which actually ran; an
+      // untouched worker must not hide a dom session in progress.
+      const live = response && response.ok &&
+        (response.status === 'typing' || response.status === 'paused' || response.total > 0);
+      if (live) {
+        applyStatus(response);
+        if (response.status === 'typing' || response.status === 'paused') clearMessage();
+        return;
+      }
+    } catch (err) {
+      // Worker asleep or never started a session; fall through to the dom probe.
+    }
+  }
+
   try {
     const response = await sendToContent({ type: 'GET_STATUS' });
     if (response && response.ok) {
@@ -351,3 +501,4 @@ async function syncStatus() {
 
 render();
 syncStatus();
+autoDetectEngine();

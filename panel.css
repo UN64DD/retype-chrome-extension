@@ -122,6 +122,32 @@ body {
   border-color: var(--accent);
 }
 
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 11px;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  margin: 2px 0 0;
+  flex-shrink: 0;
+}
+
+.toggle-text {
+  display: block;
+  font-weight: 600;
+}
+
+.toggle-hint {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 /* Two columns so four buttons stay readable in a narrow panel. */
 .controls {
   flex-shrink: 0;
