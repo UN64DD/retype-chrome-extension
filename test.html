@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Retype - Test Page</title>
+  <style>
+    body {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+      color: #1f2430;
+    }
+    h1 { font-size: 26px; }
+    h2 { font-size: 19px; margin-top: 32px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    textarea, input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #d7dbe3;
+      border-radius: 8px;
+      font: inherit;
+      box-sizing: border-box;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    [contenteditable] {
+      min-height: 120px;
+      padding: 10px;
+      border: 1px dashed #2f6fed;
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+    [contenteditable]:focus { outline: 2px solid rgba(47, 111, 237, 0.3); }
+    .field { margin-bottom: 24px; }
+    .hint { color: #6b7280; font-size: 13.5px; }
+    code {
+      background: #eef1f6;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Retype test page</h1>
+  <p class="hint">
+    Use this page to test the Retype Chrome extension (Phase 1).
+    Each field below exercises one supported editable element type.
+  </p>
+
+  <div class="field">
+    <label for="testTextarea">1. Textarea</label>
+    <textarea id="testTextarea" placeholder="Click here, then start Retype..."></textarea>
+    <p class="hint">Best for multi-line text: newlines should be preserved.</p>
+  </div>
+
+  <div class="field">
+    <label for="testInput">2. Text input</label>
+    <input type="text" id="testInput" placeholder="Click here, then start Retype...">
+    <p class="hint">Single-line input. Text is inserted at the caret position.</p>
+  </div>
+
+  <div class="field">
+    <label for="testEditable">3. Contenteditable div</label>
+    <div id="testEditable" contenteditable="true" data-placeholder="Click here, then start Retype..."></div>
+    <p class="hint">Rich-text style element. Supports text and line breaks.</p>
+  </div>
+
+  <h2>How to test</h2>
+  <ol>
+    <li>Load the <code>retype-extension</code> folder as an unpacked extension (see README).</li>
+    <li>Click inside one of the fields above so it is focused.</li>
+    <li>Click the Retype icon in the Chrome toolbar.</li>
+    <li>Paste or type some text, pick a typing delay, and press <strong>Start</strong>.</li>
+    <li>Watch the text appear one character at a time; check the status and progress in the popup.</li>
+    <li>Try <strong>Pause</strong> (typing should freeze, then resume from the same character), <strong>Stop</strong> (typing halts; a new Start begins from the start), and <strong>Clear</strong>.</li>
+    <li>Try Start <em>without</em> focusing a field first - you should see a helpful error.</li>
+  </ol>
+
+  <h2>Local files and Chrome's extension security</h2>
+  <p>
+    If you opened this page as a local file (<code>file:///.../test.html</code>), Chrome blocks
+    extensions from reading it by default. Either enable
+    <strong>Allow access to file URLs</strong> on the extension's details page
+    (<code>chrome://extensions/</code> &rarr; Retype &rarr; Details), or serve this folder
+    over a local HTTP server, which needs no extra permission:
+  </p>
+  <pre><code>python3 -m http.server 8000</code></pre>
+  <p>Then open:</p>
+  <pre><code>http://localhost:8000/test.html</code></pre>
+
+  <h2>Suggested test cases</h2>
+  <ol>
+    <li>Type <code>Hello world!</code> into the textarea - expect <code>H &rarr; He &rarr; Hel &rarr; ... &rarr; Hello world!</code></li>
+    <li>Type multiple lines - newlines must be preserved in the textarea.</li>
+    <li>Pause mid-typing, then resume - it must continue at the same character.</li>
+    <li>Stop mid-typing - typing must halt completely.</li>
+    <li>Start with no focused field - expect "No editable field detected."</li>
+    <li>Repeat for the textarea, the text input, and the contenteditable div.</li>
+  </ol>
+</body>
+</html>

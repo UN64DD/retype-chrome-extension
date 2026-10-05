@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Retype</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="header">
+    <h1 class="title">Retype</h1>
+    <span id="statusBadge" class="badge badge-ready">Ready</span>
+  </header>
+
+  <textarea
+    id="text"
+    class="text-input"
+    placeholder="Paste your text here..."
+    rows="7"
+    spellcheck="false"
+  ></textarea>
+
+  <div class="speed-row">
+    <label for="speedPreset" class="speed-label">Typing delay:</label>
+    <select id="speedPreset" class="speed-select">
+      <option value="10">10 ms</option>
+      <option value="25">25 ms</option>
+      <option value="50" selected>50 ms</option>
+      <option value="75">75 ms</option>
+      <option value="100">100 ms</option>
+      <option value="250">250 ms</option>
+      <option value="500">500 ms</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <input
+      type="number"
+      id="speedCustom"
+      class="speed-custom"
+      min="0"
+      max="60000"
+      step="1"
+      placeholder="ms"
+      hidden
+    >
+  </div>
+
+  <div class="controls">
+    <button id="startBtn" class="btn btn-primary" type="button">Start</button>
+    <button id="pauseBtn" class="btn" type="button" disabled>Pause</button>
+    <button id="stopBtn" class="btn" type="button" disabled>Stop</button>
+    <button id="clearBtn" class="btn" type="button">Clear</button>
+  </div>
+
+  <div id="message" class="message" role="alert" hidden></div>
+
+  <div class="status-row">
+    <span class="status-label">Status:</span>
+    <span id="statusText" class="status-value">Ready</span>
+  </div>
+
+  <div class="progress">
+    <div class="progress-track">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+    <span id="progressText" class="progress-text">0 / 0 characters</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
