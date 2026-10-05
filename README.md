@@ -6,7 +6,7 @@ text into the extension popup, click into a text field on any web page, press
 speed you choose.
 
 Phase 1 focuses on the core typing engine for normal web pages.
-Google Docs and Microsoft Word integration are intentionally **not** included yet
+Google Docs is now supported; Microsoft Word integration is not included yet
 (see Roadmap).
 
 ## Current features
@@ -94,7 +94,7 @@ the recommended route.)
 | # | Test | Expected result |
 |---|------|-----------------|
 | 1 | Type `Hello world!` | `H → He → Hel → ... → Hello world!` |
-| 2 | Type multiple lines | Newlines preserved in the textarea |
+| 2 | Type multiple lines | Newlines preserved in the textarea/Docs |
 | 3 | Pause mid-typing, then Resume | Continues from the exact character |
 | 4 | Stop mid-typing | Typing halts completely; next Start begins from the start |
 | 5 | Start with no focused field | "No editable field detected. Click inside a text field first." |
@@ -119,9 +119,13 @@ the recommended route.)
 
 ## Known limitations
 
-- **Google Docs / Microsoft Word / other canvas-based editors are not supported**
-  (by design, this phase). They do not use normal DOM inputs.
-- Only the top frame is typed into; content inside `<iframe>`s is not reached.
+- **Google Docs is now supported** via synthetic keyboard events
+  (in addition to normal DOM inputs). Microsoft Word for the web / other
+  canvas-based editors are not supported yet.
+- Only the top frame is typed into; content inside `<iframe>`s (including Google Docs'
+  editing iframe in some cases) may require the focused element to be targeted
+  directly. If typing does nothing in Docs, ensure the document text area is focused
+  before starting.
 - Works on normal `http(s)` pages. Chrome-internal pages (`chrome://`, the Web
   Store) and PDFs cannot run content scripts.
 - Local `file://` pages require **Allow access to file URLs** (or use the local
@@ -136,17 +140,15 @@ the recommended route.)
 
 ## Future roadmap
 
-**Next phase: Google Docs integration**
+**Next phase: Google Docs integration (improvements)**
 
-1. Study how Google Docs represents text: a canvas-based renderer where typing
-   must be dispatched as synthetic keyboard events (`keydown` / `keypress` /
-   `keyup`) against its hidden input/iframe, not as DOM value changes.
-2. Add a Docs-specific inserter behind the same `typeText` interface, selected by
-   page detection, keeping the popup and engine untouched.
-3. Handle Docs' line-break model and caret tracking (Docs owns its own caret
-   instead of the browser selection).
-4. Validate against a large sample document, then repeat the approach for
-   Microsoft Word for the web, which uses a similar but non-identical model.
+1. Handle Google Docs' line-break model and caret tracking more robustly (Docs owns
+   its own caret; Enter/newlines may need special handling beyond a single char).
+2. Better targeting of the active editing surface (Docs often uses an iframe or a
+   contenteditable with complex event listeners). Detect and focus the correct
+   element.
+3. Validate against a large sample document, then add Microsoft Word for the web
+   support, which uses a similar but non-identical model.
 
 Later ideas: configurable typing jitter (human-like speed), per-field start
 position, keyboard shortcut to start/stop, and an options page.

@@ -40,8 +40,30 @@
 
   // Returns the element the user should type into, or null.
   function getActiveEditableElement() {
-    const el = document.activeElement;
-    return isEditable(el) ? el : null;
+    let el = document.activeElement;
+    if (isEditable(el)) return el;
+    if (isGoogleDocs()) {
+      // Google Docs often uses a contenteditable element with role="textbox"
+      // as the main editing surface. Try to find one.
+      el = document.querySelector('[contenteditable="true"], [role="textbox"], .docs-texteventtarget-iframe');
+      if (isEditable(el)) return el;
+      // Sometimes it's in an iframe; but we have all_frames - try common selectors in document
+      const candidates = document.querySelectorAll('[contenteditable="true"], [role="textbox"]');
+      for (let i = 0; i < candidates.length; i++) {
+        if (isEditable(candidates[i])) return candidates[i];
+      }
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------- Page detection
+
+  function isGoogleDocs() {
+    try {
+      return /docs\.google\.com/.test(location.hostname);
+    } catch (err) {
+      return false;
+    }
   }
 
   // ------------------------------------------------------- Character insert
@@ -164,7 +186,58 @@
     }
   }
 
+  // Google Docs captures typed characters via synthetic keyboard events sent to
+  // its internal document view (often in a contenteditable iframe or a canvas-
+  // backed surface). Dispatching keydown/keypress/keyup with the correct
+  // KeyboardEventInit allows Docs to process the character as if the user typed it.
+  // This does *not* modify the DOM directly; Docs owns its own text model.
+  function insertIntoGoogleDocs(el, char) {
+    if (char === '\n') {
+      const enterInit = {
+        bubbles: true,
+        cancelable: true,
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        charCode: 13,
+        composed: true,
+      };
+      el.dispatchEvent(new KeyboardEvent('keydown', enterInit));
+      el.dispatchEvent(new KeyboardEvent('keypress', enterInit));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertLineBreak', composed: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', enterInit));
+      return;
+    }
+
+    const isSpace = char === ' ';
+    const upper = char.toUpperCase();
+    const code = isSpace ? 'Space' : (/^[A-Z]$/.test(upper) ? 'Key' + upper : '');
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      key: isSpace ? ' ' : char,
+      code: code,
+      charCode: char.charCodeAt(0),
+      keyCode: char.charCodeAt(0),
+      which: char.charCodeAt(0),
+      composed: true,
+    };
+
+    // Some Docs surfaces expect keydown/keypress/keyup in order.
+    el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    if (char.length === 1) {
+      el.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+    }
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char, composed: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+  }
+
   function insertChar(el, char) {
+    if (isGoogleDocs()) {
+      insertIntoGoogleDocs(el, char);
+      return;
+    }
     const tag = el.tagName.toUpperCase();
     if (tag === 'TEXTAREA' || tag === 'INPUT') {
       insertIntoValue(el, char);
@@ -226,7 +299,9 @@
       }
 
       try {
-        insertChar(state.target, state.text[state.index]);
+        let ch = state.text[state.index];
+        if (ch === '\r') ch = '\n';
+        insertChar(state.target, ch);
       } catch (err) {
         fail('Typing failed: ' + err.message);
         return;
@@ -276,8 +351,16 @@
     // The popup holds browser focus, but the page keeps its activeElement;
     // focus it again so the caret/selection are where we type.
     try {
-      if (document.activeElement !== target) target.focus();
-      if (target.isContentEditable) ensureCaretIn(target);
+      if (document.activeElement !== target) {
+        try { target.focus(); } catch (e) {}
+      }
+      if (target.isContentEditable) {
+        try { ensureCaretIn(target); } catch (e) {}
+      }
+      if (isGoogleDocs()) {
+        // Ensure Docs receives focus on the editing surface
+        try { target.click(); } catch (e) {}
+      }
     } catch (err) {
       // Focus can fail on exotic elements; insertion still tries its best.
     }
