@@ -151,3 +151,4 @@ the recommended route.)
 Later ideas: configurable typing jitter (human-like speed), per-field start
 position, keyboard shortcut to start/stop, and an options page.
 # retype-chrome-extension
+# retype-chrome-extension
